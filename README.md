@@ -1,6 +1,6 @@
-# Docker Compose — Spring Boot + MySQL 컨테이너 의존성 및 헬스체크 탐구
+# Docker Compose — Spring Boot와 MySQL 컨테이너 의존성 및 헬스체크 탐구
 
-Docker Compose 환경에서 Spring Boot + MySQL 다중 컨테이너를 구성하면서, **"컨테이너가 시작된 상태"와 "서비스가 실제로 사용 가능한 상태"가 왜 구분되어야 하는가**를 다양한 시나리오를 통해 직접 검증한 기록이다.
+Docker Compose 환경에서 Spring Boot와 MySQL 다중 컨테이너를 구성하면서, **"컨테이너가 시작된 상태"와 "서비스가 실제로 사용 가능한 상태"가 왜 구분되어야 하는가**를 다양한 시나리오를 통해 직접 검증한 기록이다.
 
 ---
 
@@ -21,7 +21,7 @@ Docker Compose 환경에서 Spring Boot + MySQL 다중 컨테이너를 구성하
 MySQL 프로세스가 올라왔다고 해서 즉시 쿼리를 처리할 수 있는 상태는 아니며, InnoDB 초기화·권한 설정 등에 수십 초가 소요된다.  
 이 간극 때문에 Spring Boot가 MySQL에 접속을 시도했다가 실패하고 비정상 종료되는 문제가 발생한다.
 
-> **해결 방향** — `healthcheck` + `depends_on condition: service_healthy` 조합으로, MySQL이 실제로 준비된 이후에만 app이 기동되도록 제어한다.
+> **해결 방향** — `healthcheck`와 `depends_on condition: service_healthy` 조합으로, MySQL이 실제로 준비된 이후에만 app이 기동되도록 제어한다.
 
 ---
 
@@ -320,6 +320,58 @@ Spring Boot 기동
 **결론** — `depends_on condition: service_healthy`는 MySQL이 준비되기 전에는 app 기동을 원천 차단하여 위와 같은 Crash Loop 상황 자체를 방지한다.
 
 ---
+
+### 시나리오 1-2. 볼륨 영속성 검증
+
+볼륨 영속성 검증 — 컨테이너 삭제 후 재생성
+
+**목적** — 컨테이너를 완전히 삭제하고 새로 생성했을 때 기존 데이터가 보존되는지 검증한다.
+
+**실행**
+```bash# 
+컨테이너 전체 삭제 (볼륨은 유지)
+docker compose down
+
+# 새로 기동
+docker compose up -d
+
+# DB 접속하여 데이터 확인
+docker exec -it 02compose-mysqldb-1 mysql -u user01 -pfisa
+
+# MySQL 접속 후
+use fisa;
+show tables;
+select * from dept;
+```
+
+**결과**
+
+컨테이너를 완전히 삭제하고 새로 생성했음에도 불구하고, `fisa` 데이터베이스와 기존 테이블 및 데이터가 그대로 보존되어 있었다.
+```
++----------------+
+| Tables_in_fisa |
++----------------+
+| dept           |
+| emp            |
+| emp2           |
++----------------+
+```
+**원인**
+
+docker compose down은 컨테이너를 삭제하지만 named volume인 db_data는 삭제하지 않는다. MySQL의 실제 데이터가 저장되는 /var/lib/mysql 디렉토리가 db_data 볼륨에 마운트되어 있기 때문에, 컨테이너가 삭제되어도 데이터는 볼륨에 그대로 잔류한다. 새 컨테이너가 기동될 때 동일한 볼륨을 마운트하므로 기존 데이터가 자동으로 복원된다.
+```
+yamlvolumes:
+  - db_data:/var/lib/mysql   # 컨테이너가 삭제돼도 db_data 볼륨은 유지됨
+```
+
+| 명령어 | 컨테이너 | 볼륨(데이터) |
+| :--- | :---: | :---: |
+| `docker compose down` | 삭제 | **보존** |
+| `docker compose down -v` | 삭제 | **삭제** |
+
+---
+
+
 
 ### 시나리오 2. 정상 운영 중 MySQL 컨테이너 강제 종료
 
